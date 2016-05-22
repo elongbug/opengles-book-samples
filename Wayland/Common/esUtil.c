@@ -31,6 +31,12 @@
 #include <wayland-egl.h>
 #include <wayland-cursor.h>
 
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <errno.h>
+
 // Wayland Display related local variables
 struct Display {
    struct wl_display *display;
@@ -150,19 +156,19 @@ EGLBoolean CreateEGLContext ( EGLNativeWindowType hWnd, EGLDisplay* eglDisplay,
    if ( context == EGL_NO_CONTEXT )
    {
       return EGL_FALSE;
-   }   
-   
+   }
+
    // Make the context current
    if ( !eglMakeCurrent(display, surface, surface, context) )
    {
       return EGL_FALSE;
    }
-   
+
    *eglDisplay = display;
    *eglSurface = surface;
    *eglContext = context;
    return EGL_TRUE;
-} 
+}
 
 
 ///
@@ -209,7 +215,6 @@ EGLBoolean WinCreate(ESContext *esContext, const char *title)
     {
         printf("Failed to create shell_surface\n");
         return EGL_FALSE;
-       
     }
 
     wl_shell_surface_add_listener(wl_win.shell_surface, &shell_surface_listener, &wl_win);
@@ -261,7 +266,7 @@ void ESUTIL_API esInitContext ( ESContext *esContext )
 //      title - name for title bar of window
 //      width - width of window to create
 //      height - height of window to create
-//      flags  - bitwise or of window creation flags 
+//      flags  - bitwise or of window creation flags
 //          ES_WINDOW_ALPHA       - specifies that the framebuffer should have alpha
 //          ES_WINDOW_DEPTH       - specifies that a depth buffer should be created
 //          ES_WINDOW_STENCIL     - specifies that a stencil buffer should be created
@@ -280,7 +285,7 @@ GLboolean ESUTIL_API esCreateWindow ( ESContext *esContext, const char* title, G
        EGL_SAMPLE_BUFFERS, (flags & ES_WINDOW_MULTISAMPLE) ? 1 : 0,
        EGL_NONE
    };
-   
+
    if ( esContext == NULL )
    {
       return GL_FALSE;
@@ -294,7 +299,7 @@ GLboolean ESUTIL_API esCreateWindow ( ESContext *esContext, const char* title, G
       return GL_FALSE;
    }
 
-  
+
    if ( !CreateEGLContext ( esContext->hWnd,
                             &esContext->eglDisplay,
                             &esContext->eglContext,
@@ -303,7 +308,7 @@ GLboolean ESUTIL_API esCreateWindow ( ESContext *esContext, const char* title, G
    {
       return GL_FALSE;
    }
-   
+
 
    return GL_TRUE;
 }
@@ -390,9 +395,9 @@ void ESUTIL_API esLogMessage ( const char *formatStr, ... )
 
     va_start ( params, formatStr );
     vsprintf ( buf, formatStr, params );
-    
+
     printf ( "%s", buf );
-    
+
     va_end ( params );
 }
 
@@ -445,4 +450,133 @@ char* ESUTIL_API esLoadTGA ( char *fileName, int *width, int *height )
     }
     fclose(f);
     return buffer;
+}
+
+void ESUTIL_API esImageDump(const void *data, int width, int height, int num)
+{
+    char name[200];
+    char path_name[20] = "/tmp/gles_test_dump";
+
+    if (mkdir(path_name, 0755) == -1)
+    {
+        if (errno != EEXIST)
+        {
+            printf("Directory creation error!\n");
+            return;
+        }
+    }
+    snprintf(name, sizeof(name), "%s/[%d][%d][%d][%04d].bmp", path_name, getpid(),
+             width, height, num);
+
+    switch (esImageDumpBmp(name, data, width, height))
+    {
+       case 0:
+          printf("%s file is dumped\n", name);
+          break;
+       case -1:
+          printf("Dump failed. internal error (data = %p)(width = %d)(height = %d)\n",
+                 data, width, height);
+          break;
+       case -2:
+          printf("Dump failed. file pointer error\n");
+          break;
+     }
+}
+
+int ESUTIL_API esImageDumpBmp(const char *file, const void *data, int width, int height)
+{
+     typedef unsigned char UINT8;
+     typedef signed char SINT8;
+     typedef unsigned short UINT16;
+     typedef signed short SINT16;
+     typedef unsigned int UINT32;
+     typedef signed int SINT32;
+     typedef struct BMP_FILEHDR // BMP file header
+     {
+          UINT32 bfSize; // size of file
+          UINT16 bfReserved1;
+          UINT16 bfReserved2;
+          UINT32 bfOffBits; // pointer to the pixmap bits
+     } BMP_FILEHDR;
+     typedef struct BMP_INFOHDR // BMP information header
+     {
+          UINT32 biSize; // size of this struct
+          UINT32 biWidth; // pixmap width
+          UINT32 biHeight; // pixmap height
+          UINT16 biPlanes; // should be 1
+          UINT16 biBitCount; // number of bits per pixel
+          UINT32 biCompression; // compression method
+          UINT32 biSizeImage; // size of image
+          UINT32 biXPelsPerMeter; // horizontal resolution
+          UINT32 biYPelsPerMeter; // vertical resolution
+          UINT32 biClrUsed; // number of colors used
+          UINT32 biClrImportant; // number of important colors
+     } BMP_INFOHDR;
+
+#define BitmapColorGetR(color) (((color) >> 0) & 0xFF)
+#define BitmapColorGetG(color) (((color) >> 8) & 0xFF)
+#define BitmapColorGetB(color) (((color) >> 16) & 0xFF)
+#define BitmapColorGetA(color) (((color) >> 24) & 0xFF)
+
+    int bmpWidth = width;
+    int bmpHeight = height;
+    int stride  = width * 4;
+    char *m_pmap = (char *)data;
+    //virtual PixelFormat & Get PixelFormat() = 0; //assume pf is ARGB
+    FILE *fp = fopen(file , "wb");
+    if(!fp)
+    {
+        printf("FILE ERROR: %s\t", strerror(errno));
+        return -2;
+    }
+    SINT32 bpl = bmpWidth * 4;
+    BMP_FILEHDR fhdr;
+    fputc('B', fp);
+    fputc('M', fp);
+    fhdr.bfReserved1 = fhdr.bfReserved2 = 0;
+    fhdr.bfSize = fhdr.bfOffBits + bpl * bmpHeight;
+
+    fwrite(&fhdr, 1, 12, fp);
+    //BMP header.
+
+    BMP_INFOHDR bhdr;
+    bhdr.biSize = 40;
+    bhdr.biBitCount = 32;
+    bhdr.biCompression = 0; // RGB Format
+    bhdr.biPlanes = 1;
+    bhdr.biWidth = bmpWidth;
+    bhdr.biHeight = bmpHeight;
+    bhdr.biClrImportant = 0;
+    bhdr.biClrUsed = 0;
+    bhdr.biXPelsPerMeter = 2384;
+    bhdr.biYPelsPerMeter = 2384;
+    bhdr.biSizeImage = bpl * bmpHeight;
+
+    fwrite(&bhdr, 1, 40, fp);
+
+    //BMP Data.
+    SINT32 x, y;
+    for ( y = 0; y < bmpHeight ; y++)
+    {
+        SINT32 base = y * stride;
+        for (x = 0 ; x < (SINT32)bmpWidth ; x++)
+        {
+            UINT32 i = base + x * 4;
+            UINT32 pixelData = *(UINT32*)(m_pmap + i);
+            UINT8 b1 = BitmapColorGetB(pixelData);
+            UINT8 g1 = BitmapColorGetG(pixelData);
+            UINT8 r1 = BitmapColorGetR(pixelData);
+            UINT8 a1 = BitmapColorGetA(pixelData);
+            r1 = r1 * a1 / 255;
+            g1 = g1 * a1 / 255;
+            b1 = b1 * a1 / 255;
+            UINT32 temp = (a1<<24)|(r1<<16)|(g1<<8)|b1; // a bmp pixel in little endian is B?G?R?A
+
+            fwrite(&temp, 4, 1, fp);
+        }
+    }
+    fflush(fp);
+    fclose(fp);
+
+    return 0;
 }
